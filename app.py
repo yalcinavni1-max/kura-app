@@ -3,7 +3,7 @@ import random
 import math
 import pandas as pd
 
-st.set_page_config(page_title="Turnuva Yönetim Sistemi", layout="centered")
+st.set_page_config(page_title="Turnuva Yönetim Sistemi", layout="centered", page_icon="🏆")
 
 st.title("🏆 Turnuva Yönetim Sistemi")
 
@@ -25,6 +25,51 @@ if 'skorlarB' not in st.session_state:
 
 tab1, tab2, tab3 = st.tabs(["🎲 Kura & Oyuncular", "⚽ Grup Maçları & Puan", "🏆 Yarı Final"])
 
+# --- AKILLI ÇAKIŞMASIZ MAÇ DİZİCİ ---
+def akilli_cakismasiz_maclar(grup):
+    # Tüm olası maç kombinasyonlarını oluştur
+    tum_maclar = []
+    for i in range(len(grup)):
+        for j in range(i + 1, len(grup)):
+            tum_maclar.append((grup[i], grup[j]))
+    
+    toplam_mac = len(tum_maclar)
+    sirali_maclar = []
+    kullanildi = [False] * toplam_mac
+    
+    for _ in range(toplam_mac):
+        eklendi = False
+        # Havuzu rastgele tara
+        indeksler = list(range(toplam_mac))
+        random.shuffle(indeksler)
+        
+        for k in indeksler:
+            if not kullanildi[k]:
+                p1, p2 = tum_maclar[k]
+                uygun = True
+                
+                # Bir önceki maçtaki oyuncularla çakışma var mı?
+                if len(sirali_maclar) > 0:
+                    prev_p1, prev_p2 = sirali_maclar[-1]
+                    if p1 == prev_p1 or p1 == prev_p2 or p2 == prev_p1 or p2 == prev_p2:
+                        uygun = False
+                
+                if uygun:
+                    sirali_maclar.append((p1, p2))
+                    kullanildi[k] = True
+                    eklendi = True
+                    break
+        
+        # Eğer oyuncu sayısı azlığından kilitlenme olursa kalan ilk maçı zorunlu ekle
+        if not eklendi:
+            for k in range(toplam_mac):
+                if not kullanildi[k]:
+                    sirali_maclar.append(tum_maclar[k])
+                    kullanildi[k] = True
+                    break
+                    
+    return siraliMaclar if 'siraliMaclar' in locals() else sirali_maclar
+
 # --- TAB 1: KURA ÇEKİMİ ---
 with tab1:
     st.subheader("Oyuncu Listesi")
@@ -44,20 +89,12 @@ with tab1:
             st.session_state.gA = oyuncular[:yari]
             st.session_state.gB = oyuncular[yari:]
             
-            # Akıllı Maç Oluşturucu
-            def akilli_maclar(grup):
-                maclar = []
-                for i in range(len(grup)):
-                    for j in range(i+1, len(grup)):
-                        maclar.append((grup[i], grup[j]))
-                random.shuffle(maclar)
-                return maclar
-            
-            st.session_state.maclarA = akilli_maclar(st.session_state.gA)
-            st.session_state.maclarB = akilli_maclar(st.session_state.gB)
+            # Akıllı Çakışmasız Fikstür Oluştur
+            st.session_state.maclarA = akilli_cakismasiz_maclar(st.session_state.gA)
+            st.session_state.maclarB = akilli_cakismasiz_maclar(st.session_state.gB)
             st.session_state.skorlarA = {}
             st.session_state.skorlarB = {}
-            st.success("Kura çekildi! Grup maçları oluşturuldu.")
+            st.success("Kura çekildi! Akıllı dinlendirmeli maç fikstürü oluşturuldu.")
 
     if col2.button("🗑️ Turnuvayı Sıfırla", use_container_width=True):
         st.session_state.clear()
@@ -74,6 +111,41 @@ with tab1:
             for p in st.session_state.gB:
                 st.warning(p)
 
+# Puan Durumu Hesaplama Fonksiyonu
+def hesapla_puan(grup, maclar, skorlar):
+    stats = {p: {'O': 0, 'G': 0, 'B': 0, 'M': 0, 'AG': 0, 'YG': 0, 'AV': 0, 'Puan': 0} for p in grup}
+    for idx, (p1, p2) in enumerate(maclar):
+        s1 = skorlar.get(f"{idx}_1", 0)
+        s2 = skorlar.get(f"{idx}_2", 0)
+        
+        stats[p1]['O'] += 1
+        stats[p2]['O'] += 1
+        stats[p1]['AG'] += s1
+        stats[p1]['YG'] += s2
+        stats[p2]['AG'] += s2
+        stats[p2]['YG'] += s1
+        
+        if s1 > s2:
+            stats[p1]['G'] += 1
+            stats[p1]['Puan'] += 3
+            stats[p2]['M'] += 1
+        elif s2 > s1:
+            stats[p2]['G'] += 1
+            stats[p2]['Puan'] += 3
+            stats[p1]['M'] += 1
+        else:
+            stats[p1]['B'] += 1
+            stats[p1]['Puan'] += 1
+            stats[p2]['B'] += 1
+            stats[p2]['Puan'] += 1
+
+    for p in stats:
+        stats[p]['AV'] = stats[p]['AG'] - stats[p]['YG']
+    
+    df = pd.DataFrame.from_dict(stats, orient='index')
+    df = df.sort_values(by=['Puan', 'AV', 'AG'], ascending=False)
+    return df
+
 # --- TAB 2: MAÇLAR VE PUAN DURUMU ---
 with tab2:
     if not st.session_state.maclarA:
@@ -82,7 +154,7 @@ with tab2:
         st.subheader("⚽ A Grubu Maçları")
         for idx, (p1, p2) in enumerate(st.session_state.maclarA):
             col_m, col_s1, col_s2 = st.columns([2, 1, 1])
-            col_m.write(f"**{p1}** vs **{p2}**")
+            col_m.write(f"**{idx+1}. Maç:** {p1} vs {p2}")
             s1 = col_s1.number_input(f"{p1}", min_value=0, max_value=20, key=f"a_{idx}_1", value=st.session_state.skorlarA.get(f"{idx}_1", 0))
             s2 = col_s2.number_input(f"{p2}", min_value=0, max_value=20, key=f"a_{idx}_2", value=st.session_state.skorlarA.get(f"{idx}_2", 0))
             st.session_state.skorlarA[f"{idx}_1"] = s1
@@ -92,52 +164,16 @@ with tab2:
         st.subheader("⚽ B Grubu Maçları")
         for idx, (p1, p2) in enumerate(st.session_state.maclarB):
             col_m, col_s1, col_s2 = st.columns([2, 1, 1])
-            col_m.write(f"**{p1}** vs **{p2}**")
+            col_m.write(f"**{idx+1}. Maç:** {p1} vs {p2}")
             s1 = col_s1.number_input(f"{p1}", min_value=0, max_value=20, key=f"b_{idx}_1", value=st.session_state.skorlarB.get(f"{idx}_1", 0))
             s2 = col_s2.number_input(f"{p2}", min_value=0, max_value=20, key=f"b_{idx}_2", value=st.session_state.skorlarB.get(f"{idx}_2", 0))
             st.session_state.skorlarB[f"{idx}_1"] = s1
             st.session_state.skorlarB[f"{idx}_2"] = s2
 
-        # Puan Durumu Hesaplama Fonksiyonu
-        def hesapla_puan(grup, maclar, skorlar, prefix):
-            stats = {p: {'O': 0, 'G': 0, 'B': 0, 'M': 0, 'AG': 0, 'YG': 0, 'AV': 0, 'Puan': 0} for p in grup}
-            for idx, (p1, p2) in enumerate(maclar):
-                s1 = skorlar.get(f"{idx}_1", 0)
-                s2 = skorlar.get(f"{idx}_2", 0)
-                
-                # Sadece skor girildiyse (Varsayılan 0-0'ı maç oynandı saymamak için kontrol eklenebilir)
-                stats[p1]['O'] += 1
-                stats[p2]['O'] += 1
-                stats[p1]['AG'] += s1
-                stats[p1]['YG'] += s2
-                stats[p2]['AG'] += s2
-                stats[p2]['YG'] += s1
-                
-                if s1 > s2:
-                    stats[p1]['G'] += 1
-                    stats[p1]['Puan'] += 3
-                    stats[p2]['M'] += 1
-                elif s2 > s1:
-                    stats[p2]['G'] += 1
-                    stats[p2]['Puan'] += 3
-                    stats[p1]['M'] += 1
-                else:
-                    stats[p1]['B'] += 1
-                    stats[p1]['Puan'] += 1
-                    stats[p2]['B'] += 1
-                    stats[p2]['Puan'] += 1
-
-            for p in stats:
-                stats[p]['AV'] = stats[p]['AG'] - stats[p]['YG']
-            
-            df = pd.DataFrame.from_dict(stats, orient='index')
-            df = df.sort_values(by=['Puan', 'AV', 'AG'], ascending=False)
-            return df
-
         st.divider()
         st.subheader("📊 Puan Durumları")
-        dfA = hesapla_puan(st.session_state.gA, st.session_state.maclarA, st.session_state.skorlarA, "a")
-        dfB = hesapla_puan(st.session_state.gB, st.session_state.maclarB, st.session_state.skorlarB, "b")
+        dfA = hesapla_puan(st.session_state.gA, st.session_state.maclarA, st.session_state.skorlarA)
+        dfB = hesapla_puan(st.session_state.gB, st.session_state.maclarB, st.session_state.skorlarB)
         
         st.write("#### A Grubu Puan Durumu")
         st.dataframe(dfA, use_container_width=True)
@@ -149,8 +185,8 @@ with tab2:
 with tab3:
     st.subheader("🔥 Yarı Final Eşleşmeleri")
     if st.session_state.gA and st.session_state.gB:
-        dfA = hesapla_puan(st.session_state.gA, st.session_state.maclarA, st.session_state.skorlarA, "a")
-        dfB = hesapla_puan(st.session_state.gB, st.session_state.maclarB, st.session_state.skorlarB, "b")
+        dfA = hesapla_puan(st.session_state.gA, st.session_state.maclarA, st.session_state.skorlarA)
+        dfB = hesapla_puan(st.session_state.gB, st.session_state.maclarB, st.session_state.skorlarB)
         
         a1, a2 = dfA.index[0], dfA.index[1]
         b1, b2 = dfB.index[0], dfB.index[1]
