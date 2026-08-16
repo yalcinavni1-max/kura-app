@@ -1,16 +1,90 @@
 import streamlit as st
 import itertools
 import random
+import json
+import os
 
-st.set_page_config(page_title="FIFA Turnuva Yöneticisi", page_icon="⚽", layout="wide")
+# Sayfa Yapılandırması
+st.set_page_config(
+    page_title="FIFA Kura & Turnuva Yöneticisi",
+    page_icon="⚽",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# --- YARDIMCI FONKSİYONLAR ---
-def create_group_fixtures(players, group_name):
-    matches = list(itertools.combinations(players, 2))
-    random.shuffle(matches)
-    fixture_list = []
-    for idx, (p1, p2) in enumerate(matches):
-        fixture_list.append({
+# Mobil Uyumlu Özel CSS
+st.markdown("""
+<style>
+    .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 2rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    .group-box {
+        background-color: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 15px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+DATA_FILE = "tournament_state.json"
+
+def save_to_disk():
+    state_to_save = {
+        "tournament_started": st.session_state.get("tournament_started", False),
+        "stage": st.session_state.get("stage", "setup"),
+        "all_players_input": st.session_state.get("all_players_input", ""),
+        "players_a": st.session_state.get("players_a", []),
+        "players_b": st.session_state.get("players_b", []),
+        "advancing_count": st.session_state.get("advancing_count", 2),
+        "matches_a": st.session_state.get("matches_a", []),
+        "matches_b": st.session_state.get("matches_b", []),
+        "knockout": st.session_state.get("knockout", {}),
+        "draw_done": st.session_state.get("draw_done", False)
+    }
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(state_to_save, f, ensure_ascii=False, indent=2)
+
+def load_from_disk():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    st.session_state[k] = v
+        except Exception:
+            pass
+
+# Fikstür Üretici (Ardışık Maçları Engelleyen Akıllı Sıralama)
+def create_balanced_schedule(players, group_name):
+    pairs = list(itertools.combinations(players, 2))
+    random.shuffle(pairs)
+    
+    scheduled = []
+    remaining = list(pairs)
+    last_p1, last_p2 = None, None
+    
+    while remaining:
+        best_candidate = None
+        for pair in remaining:
+            if pair[0] != last_p1 and pair[0] != last_p2 and pair[1] != last_p1 and pair[1] != last_p2:
+                best_candidate = pair
+                break
+        
+        if not best_candidate:
+            best_candidate = remaining[0]
+            
+        scheduled.append(best_candidate)
+        remaining.remove(best_candidate)
+        last_p1, last_p2 = best_candidate[0], best_candidate[1]
+        
+    fixtures = []
+    for idx, (p1, p2) in enumerate(scheduled):
+        fixtures.append({
             "id": f"{group_name}_{idx+1}",
             "group": group_name,
             "home": p1,
@@ -19,37 +93,39 @@ def create_group_fixtures(players, group_name):
             "score_away": None,
             "played": False
         })
-    return fixture_list
+    return fixtures
 
+# Puan Tablosu Hesaplama
 def calculate_standings(players, matches):
     table = {p: {"O": 0, "G": 0, "B": 0, "M": 0, "AG": 0, "YG": 0, "AV": 0, "P": 0} for p in players}
     for m in matches:
         if m["played"] and m["score_home"] is not None and m["score_away"] is not None:
             h, a = m["home"], m["away"]
-            sh, sa = m["score_home"], m["score_away"]
+            sh, sa = int(m["score_home"]), int(m["score_away"])
             
-            table[h]["O"] += 1
-            table[a]["O"] += 1
-            table[h]["AG"] += sh
-            table[h]["YG"] += sa
-            table[a]["AG"] += sa
-            table[a]["YG"] += sh
-            table[h]["AV"] = table[h]["AG"] - table[h]["YG"]
-            table[a]["AV"] = table[a]["AG"] - table[a]["YG"]
-            
-            if sh > sa:
-                table[h]["G"] += 1
-                table[h]["P"] += 3
-                table[a]["M"] += 1
-            elif sa > sh:
-                table[a]["G"] += 1
-                table[a]["P"] += 3
-                table[h]["M"] += 1
-            else:
-                table[h]["B"] += 1
-                table[a]["B"] += 1
-                table[h]["P"] += 1
-                table[a]["P"] += 1
+            if h in table and a in table:
+                table[h]["O"] += 1
+                table[a]["O"] += 1
+                table[h]["AG"] += sh
+                table[h]["YG"] += sa
+                table[a]["AG"] += sa
+                table[a]["YG"] += sh
+                table[h]["AV"] = table[h]["AG"] - table[h]["YG"]
+                table[a]["AV"] = table[a]["AG"] - table[a]["YG"]
+                
+                if sh > sa:
+                    table[h]["G"] += 1
+                    table[h]["P"] += 3
+                    table[a]["M"] += 1
+                elif sa > sh:
+                    table[a]["G"] += 1
+                    table[a]["P"] += 3
+                    table[h]["M"] += 1
+                else:
+                    table[h]["B"] += 1
+                    table[a]["B"] += 1
+                    table[h]["P"] += 1
+                    table[a]["P"] += 1
 
     sorted_standings = sorted(
         table.items(),
@@ -58,223 +134,307 @@ def calculate_standings(players, matches):
     )
     return sorted_standings
 
-# --- SESSION STATE BAŞLATMA ---
-if "tournament_started" not in st.session_state:
-    st.session_state.tournament_started = False
-if "stage" not in st.session_state:
-    st.session_state.stage = "groups"  # 'groups' veya 'knockout'
+# Oturum Durumunu Yükle
+if "initialized" not in st.session_state:
+    st.session_state.initialized = True
+    load_from_disk()
+    if "tournament_started" not in st.session_state:
+        st.session_state.tournament_started = False
+        st.session_state.stage = "setup"
+        st.session_state.draw_done = False
 
-# --- 1. KURULUM EKRANI ---
-if not st.session_state.tournament_started:
-    st.title("⚽ FIFA Turnuva Kurulumu")
+# -------------------------------------------------------------
+# 1. KURULUM VE KURA ÇEKİMİ EKRANI
+# -------------------------------------------------------------
+if not st.session_state.tournament_started or st.session_state.stage == "setup":
+    st.title("🎲 FIFA Kura Çekimi & Turnuva Kurulumu")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        group_a_raw = st.text_area("A Grubu Oyuncuları (Her satıra bir isim)", "Oyuncu 1\nOyuncu 2\nOyuncu 3\nOyuncu 4\nOyuncu 5", height=130)
-    with col2:
-        group_b_raw = st.text_area("B Grubu Oyuncuları (Her satıra bir isim)", "Oyuncu 6\nOyuncu 7\nOyuncu 8\nOyuncu 9\nOyuncu 10", height=130)
-    
-    advancing_count = st.radio(
-        "Her gruptan kaç kişi üst tura çıksın?",
-        options=[2, 3],
-        format_func=lambda x: f"{x} Kişi ({'Doğrudan Yarı Final' if x == 2 else 'Grup 1.leri Bay + Play-off / Yarı Final'})",
-        horizontal=True
-    )
+    default_text = st.session_state.get("all_players_input", "Oyuncu 1\nOyuncu 2\nOyuncu 3\nOyuncu 4\nOyuncu 5\nOyuncu 6\nOyuncu 7\nOyuncu 8\nOyuncu 9\nOyuncu 10")
+    all_players_raw = st.text_area("📝 Katılımcı Listesi (Her satıra bir oyuncu yazın):", default_text, height=180)
+    st.session_state.all_players_input = all_players_raw
 
-    if st.button("Turnuvayı Başlat 🚀", use_container_width=True, type="primary"):
-        players_a = [p.strip() for p in group_a_raw.split("\n") if p.strip()]
-        players_b = [p.strip() for p in group_b_raw.split("\n") if p.strip()]
+    col_opt1, col_opt2 = st.columns([1, 1])
+    with col_opt1:
+        advancing_count = st.radio(
+            "Her gruptan kaç kişi üst tura çıksın?",
+            options=[2, 3],
+            format_func=lambda x: f"{x} Kişi ({'Direkt Yarı Final: A1-B2 & B1-A2' if x == 2 else 'Liderler Yarı Finale + 2. ve 3.ler Play-off'})",
+            index=0 if st.session_state.get("advancing_count", 2) == 2 else 1,
+            horizontal=True
+        )
+        st.session_state.advancing_count = advancing_count
+
+    st.divider()
+
+    # Kura Çek Butonu
+    if st.button("🎲 Kurayı Çek & Grupları Oluştur", use_container_width=True, type="secondary"):
+        player_list = [p.strip() for p in all_players_raw.split("\n") if p.strip()]
         
-        if len(players_a) < 2 or len(players_b) < 2:
-            st.error("Her grupta en az 2 oyuncu olmalıdır.")
-        elif advancing_count == 3 and (len(players_a) < 3 or len(players_b) < 3):
-            st.error("3 kişi çıkabilmesi için her grupta en az 3 oyuncu olmalıdır.")
+        min_total = advancing_count * 2
+        if len(player_list) < min_total:
+            st.error(f"Seçilen kurala göre en az {min_total} oyuncu girmelisiniz!")
         else:
-            st.session_state.players_a = players_a
-            st.session_state.players_b = players_b
-            st.session_state.advancing_count = advancing_count
-            st.session_state.matches_a = create_group_fixtures(players_a, "A")
-            st.session_state.matches_b = create_group_fixtures(players_b, "B")
+            shuffled = list(player_list)
+            random.shuffle(shuffled)
+            
+            mid = len(shuffled) // 2
+            st.session_state.players_a = shuffled[:mid]
+            st.session_state.players_b = shuffled[mid:]
+            st.session_state.draw_done = True
+            save_to_disk()
+            st.rerun()
+
+    # Kura Çekildiyse Grupları Göster ve Başlat Butonu Aç
+    if st.session_state.get("draw_done", False) and st.session_state.get("players_a") and st.session_state.get("players_b"):
+        st.subheader("🎯 Kura Sonuçları")
+        c_grp_a, c_grp_b = st.columns(2)
+        
+        with c_grp_a:
+            st.markdown("### 🅰️ A Grubu")
+            for idx, p in enumerate(st.session_state.players_a, 1):
+                st.markdown(f"**{idx}.** {p}")
+                
+        with c_grp_b:
+            st.markdown("### 🅱️ B Grubu")
+            for idx, p in enumerate(st.session_state.players_b, 1):
+                st.markdown(f"**{idx}.** {p}")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🚀 Turnuvayı & Fikstürü Başlat", use_container_width=True, type="primary"):
+            st.session_state.matches_a = create_balanced_schedule(st.session_state.players_a, "A")
+            st.session_state.matches_b = create_balanced_schedule(st.session_state.players_b, "B")
             st.session_state.tournament_started = True
             st.session_state.stage = "groups"
             st.session_state.knockout = {}
+            save_to_disk()
             st.rerun()
 
-# --- 2. GRUP AŞAMASI ---
+# -------------------------------------------------------------
+# 2. GRUP AŞAMASI
+# -------------------------------------------------------------
 elif st.session_state.stage == "groups":
-    st.title("🏆 Grup Aşaması")
-
-    tab1, tab2 = st.tabs(["🅰️ A Grubu", "🅱️ B Grubu"])
+    st.title("🏆 Grup Karşılaşmaları")
     
-    with tab1:
-        st.subheader("A Grubu Fikstür & Skorlar")
-        for m in st.session_state.matches_a:
-            c1, c2, c3, c4 = st.columns([3, 1, 1, 3])
-            c1.markdown(f"**{m['home']}**")
-            sh = c2.number_input("", min_value=0, max_value=20, value=m["score_home"] if m["played"] else 0, key=f"sh_{m['id']}")
-            sa = c3.number_input("", min_value=0, max_value=20, value=m["score_away"] if m["played"] else 0, key=f"sa_{m['id']}")
-            c4.markdown(f"**{m['away']}**")
-            if not m["played"] and (sh != 0 or sa != 0):
-                m["score_home"] = sh
-                m["score_away"] = sa
-                m["played"] = True
-            elif m["played"]:
-                m["score_home"] = sh
-                m["score_away"] = sa
+    tab_a, tab_b = st.tabs(["🅰️ A Grubu", "🅱️ B Grubu"])
+    
+    # --- A GRUBU ---
+    with tab_a:
+        st.subheader("📋 A Grubu Fikstürü")
+        for idx, m in enumerate(st.session_state.matches_a):
+            with st.container():
+                c1, c2, c3, c4 = st.columns([3, 1.2, 1.2, 3])
+                c1.markdown(f"**{m['home']}**")
+                sh_val = m["score_home"] if m["score_home"] is not None else 0
+                sa_val = m["score_away"] if m["score_away"] is not None else 0
+                
+                sh = c2.number_input("", min_value=0, max_value=25, value=sh_val, key=f"a_sh_{idx}")
+                sa = c3.number_input("", min_value=0, max_value=25, value=sa_val, key=f"a_sa_{idx}")
+                c4.markdown(f"**{m['away']}**")
+                
+                if m["score_home"] != sh or m["score_away"] != sa:
+                    m["score_home"] = sh
+                    m["score_away"] = sa
+                    m["played"] = True
+                    save_to_disk()
 
         st.divider()
         st.subheader("📊 A Grubu Puan Durumu")
         standings_a = calculate_standings(st.session_state.players_a, st.session_state.matches_a)
-        st.dataframe(
-            [{"Sıra": idx+1, "Oyuncu": p, **stats} for idx, (p, stats) in enumerate(standings_a)],
-            use_container_width=True,
-            hide_index=True
-        )
+        table_a_data = []
+        for rank, (p, stats) in enumerate(standings_a, 1):
+            status = "🟢 Üst Tur" if rank <= st.session_state.advancing_count else "⚪ Elendi"
+            table_a_data.append({"Sıra": rank, "Durum": status, "Oyuncu": p, **stats})
+        st.dataframe(table_a_data, use_container_width=True, hide_index=True)
 
-    with tab2:
-        st.subheader("B Grubu Fikstür & Skorlar")
-        for m in st.session_state.matches_b:
-            c1, c2, c3, c4 = st.columns([3, 1, 1, 3])
-            c1.markdown(f"**{m['home']}**")
-            sh = c2.number_input("", min_value=0, max_value=20, value=m["score_home"] if m["played"] else 0, key=f"sh_{m['id']}")
-            sa = c3.number_input("", min_value=0, max_value=20, value=m["score_away"] if m["played"] else 0, key=f"sa_{m['id']}")
-            c4.markdown(f"**{m['away']}**")
-            if not m["played"] and (sh != 0 or sa != 0):
-                m["score_home"] = sh
-                m["score_away"] = sa
-                m["played"] = True
-            elif m["played"]:
-                m["score_home"] = sh
-                m["score_away"] = sa
+    # --- B GRUBU ---
+    with tab_b:
+        st.subheader("📋 B Grubu Fikstürü")
+        for idx, m in enumerate(st.session_state.matches_b):
+            with st.container():
+                c1, c2, c3, c4 = st.columns([3, 1.2, 1.2, 3])
+                c1.markdown(f"**{m['home']}**")
+                sh_val = m["score_home"] if m["score_home"] is not None else 0
+                sa_val = m["score_away"] if m["score_away"] is not None else 0
+                
+                sh = c2.number_input("", min_value=0, max_value=25, value=sh_val, key=f"b_sh_{idx}")
+                sa = c3.number_input("", min_value=0, max_value=25, value=sa_val, key=f"b_sa_{idx}")
+                c4.markdown(f"**{m['away']}**")
+                
+                if m["score_home"] != sh or m["score_away"] != sa:
+                    m["score_home"] = sh
+                    m["score_away"] = sa
+                    m["played"] = True
+                    save_to_disk()
 
         st.divider()
         st.subheader("📊 B Grubu Puan Durumu")
         standings_b = calculate_standings(st.session_state.players_b, st.session_state.matches_b)
-        st.dataframe(
-            [{"Sıra": idx+1, "Oyuncu": p, **stats} for idx, (p, stats) in enumerate(standings_b)],
-            use_container_width=True,
-            hide_index=True
-        )
+        table_b_data = []
+        for rank, (p, stats) in enumerate(standings_b, 1):
+            status = "🟢 Üst Tur" if rank <= st.session_state.advancing_count else "⚪ Elendi"
+            table_b_data.append({"Sıra": rank, "Durum": status, "Oyuncu": p, **stats})
+        st.dataframe(table_b_data, use_container_width=True, hide_index=True)
 
-    all_played = all(m["played"] for m in st.session_state.matches_a + st.session_state.matches_b)
     st.divider()
-    
-    c_btn1, c_btn2 = st.columns([3, 1])
-    with c_btn1:
-        if st.button("Eleme Aşamasına Geç ⚔️", type="primary", use_container_width=True):
+    col_act1, col_act2 = st.columns([3, 1])
+    with col_act1:
+        if st.button("⚔️ Eleme Turlarına Geç", type="primary", use_container_width=True):
             st_a = [p for p, _ in calculate_standings(st.session_state.players_a, st.session_state.matches_a)]
             st_b = [p for p, _ in calculate_standings(st.session_state.players_b, st.session_state.matches_b)]
-            
             adv = st.session_state.advancing_count
             ko = {}
+            
             if adv == 2:
+                # 2 Kişi: Doğrudan Yarı Final
                 ko["sf1"] = {"home": st_a[0], "away": st_b[1], "sh": 0, "sa": 0, "played": False}
                 ko["sf2"] = {"home": st_b[0], "away": st_a[1], "sh": 0, "sa": 0, "played": False}
                 ko["final"] = {"home": "SF1 Galibi", "away": "SF2 Galibi", "sh": 0, "sa": 0, "played": False}
                 ko["third"] = {"home": "SF1 Mağlubu", "away": "SF2 Mağlubu", "sh": 0, "sa": 0, "played": False}
             elif adv == 3:
+                # 3 Kişi: 1.ler Bay, 2 vs 3 Play-off
                 ko["po1"] = {"home": st_a[1], "away": st_b[2], "sh": 0, "sa": 0, "played": False}
                 ko["po2"] = {"home": st_b[1], "away": st_a[2], "sh": 0, "sa": 0, "played": False}
-                ko["sf1"] = {"home": st_b[0], "away": "PO1 Galibi (A2/B3)", "sh": 0, "sa": 0, "played": False}
-                ko["sf2"] = {"home": st_a[0], "away": "PO2 Galibi (B2/A3)", "sh": 0, "sa": 0, "played": False}
+                ko["sf1"] = {"home": st_b[0], "away": "PO1 Galibi (A2 vs B3)", "sh": 0, "sa": 0, "played": False}
+                ko["sf2"] = {"home": st_a[0], "away": "PO2 Galibi (B2 vs A3)", "sh": 0, "sa": 0, "played": False}
                 ko["final"] = {"home": "SF1 Galibi", "away": "SF2 Galibi", "sh": 0, "sa": 0, "played": False}
                 ko["third"] = {"home": "SF1 Mağlubu", "away": "SF2 Mağlubu", "sh": 0, "sa": 0, "played": False}
-
+            
             st.session_state.knockout = ko
             st.session_state.stage = "knockout"
+            save_to_disk()
             st.rerun()
 
-    with c_btn2:
-        if st.button("Turnuvayı Sıfırla 🔄", use_container_width=True):
+    with col_act2:
+        if st.button("🔄 Sıfırla", use_container_width=True):
+            if os.path.exists(DATA_FILE):
+                os.remove(DATA_FILE)
             st.session_state.clear()
             st.rerun()
 
-# --- 3. ELEME AŞAMASI (KNOCKOUT) ---
+# -------------------------------------------------------------
+# 3. ELEME AŞAMASI (KNOCKOUT)
+# -------------------------------------------------------------
 elif st.session_state.stage == "knockout":
-    st.title("⚔️ Eleme Turları")
+    st.title("⚔️ Eleme Aşaması & Finaller")
     ko = st.session_state.knockout
     adv = st.session_state.advancing_count
 
-    # Play-off (Eğer 3 kişi çıkıyorsa)
+    # Play-off Bölümü (Eğer 3 kişi çıkıyorsa)
     if adv == 3:
-        st.subheader("🔥 Play-off / Yarı Final Ön Elemesi")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**PO 1:** {ko['po1']['home']} vs {ko['po1']['away']}")
-            c_h, c_a = st.columns(2)
-            ko['po1']['sh'] = c_h.number_input("Skor 1", min_value=0, max_value=20, value=ko['po1']['sh'], key="po1_h")
-            ko['po1']['sa'] = c_a.number_input("Skor 2", min_value=0, max_value=20, value=ko['po1']['sa'], key="po1_a")
-            if ko['po1']['sh'] != ko['po1']['sa']:
-                ko['po1']['played'] = True
-                ko['sf1']['away'] = ko['po1']['home'] if ko['po1']['sh'] > ko['po1']['sa'] else ko['po1']['away']
+        st.subheader("🔥 Play-off (Yarı Final Ön Elemesi)")
+        col_po1, col_po2 = st.columns(2)
+        
+        with col_po1:
+            st.markdown(f"**Play-off 1:** {ko['po1']['home']} (A2) vs {ko['po1']['away']} (B3)")
+            c1, c2 = st.columns(2)
+            p1_sh = c1.number_input("Skor 1", min_value=0, max_value=25, value=ko['po1']['sh'], key="po1_h_input")
+            p1_sa = c2.number_input("Skor 2", min_value=0, max_value=25, value=ko['po1']['sa'], key="po1_a_input")
+            if p1_sh != ko['po1']['sh'] or p1_sa != ko['po1']['sa']:
+                ko['po1']['sh'] = p1_sh
+                ko['po1']['sa'] = p1_sa
+                ko['po1']['played'] = (p1_sh != p1_sa)
+                if p1_sh != p1_sa:
+                    ko['sf1']['away'] = ko['po1']['home'] if p1_sh > p1_sa else ko['po1']['away']
+                save_to_disk()
+                st.rerun()
 
-        with col2:
-            st.markdown(f"**PO 2:** {ko['po2']['home']} vs {ko['po2']['away']}")
-            c_h, c_a = st.columns(2)
-            ko['po2']['sh'] = c_h.number_input("Skor 1", min_value=0, max_value=20, value=ko['po2']['sh'], key="po2_h")
-            ko['po2']['sa'] = c_a.number_input("Skor 2", min_value=0, max_value=20, value=ko['po2']['sa'], key="po2_a")
-            if ko['po2']['sh'] != ko['po2']['sa']:
-                ko['po2']['played'] = True
-                ko['sf2']['away'] = ko['po2']['home'] if ko['po2']['sh'] > ko['po2']['sa'] else ko['po2']['away']
+        with col_po2:
+            st.markdown(f"**Play-off 2:** {ko['po2']['home']} (B2) vs {ko['po2']['away']} (A3)")
+            c1, c2 = st.columns(2)
+            p2_sh = c1.number_input("Skor 1", min_value=0, max_value=25, value=ko['po2']['sh'], key="po2_h_input")
+            p2_sa = c2.number_input("Skor 2", min_value=0, max_value=25, value=ko['po2']['sa'], key="po2_a_input")
+            if p2_sh != ko['po2']['sh'] or p2_sa != ko['po2']['sa']:
+                ko['po2']['sh'] = p2_sh
+                ko['po2']['sa'] = p2_sa
+                ko['po2']['played'] = (p2_sh != p2_sa)
+                if p2_sh != p2_sa:
+                    ko['sf2']['away'] = ko['po2']['home'] if p2_sh > p2_sa else ko['po2']['away']
+                save_to_disk()
+                st.rerun()
         st.divider()
 
-    # Yarı Final
-    st.subheader("🏅 Yarı Final")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"**Yarı Final 1:** {ko['sf1']['home']} vs {ko['sf1']['away']}")
-        c_h, c_a = st.columns(2)
-        ko['sf1']['sh'] = c_h.number_input("Skor 1", min_value=0, max_value=20, value=ko['sf1']['sh'], key="sf1_h")
-        ko['sf1']['sa'] = c_a.number_input("Skor 2", min_value=0, max_value=20, value=ko['sf1']['sa'], key="sf1_a")
-        if ko['sf1']['sh'] != ko['sf1']['sa']:
-            ko['sf1']['played'] = True
-            w1 = ko['sf1']['home'] if ko['sf1']['sh'] > ko['sf1']['sa'] else ko['sf1']['away']
-            l1 = ko['sf1']['away'] if ko['sf1']['sh'] > ko['sf1']['sa'] else ko['sf1']['home']
-            ko['final']['home'] = w1
-            ko['third']['home'] = l1
-
-    with col2:
-        st.markdown(f"**Yarı Final 2:** {ko['sf2']['home']} vs {ko['sf2']['away']}")
-        c_h, c_a = st.columns(2)
-        ko['sf2']['sh'] = c_h.number_input("Skor 1", min_value=0, max_value=20, value=ko['sf2']['sh'], key="sf2_h")
-        ko['sf2']['sa'] = c_a.number_input("Skor 2", min_value=0, max_value=20, value=ko['sf2']['sa'], key="sf2_a")
-        if ko['sf2']['sh'] != ko['sf2']['sa']:
-            ko['sf2']['played'] = True
-            w2 = ko['sf2']['home'] if ko['sf2']['sh'] > ko['sf2']['sa'] else ko['sf2']['away']
-            l2 = ko['sf2']['away'] if ko['sf2']['sh'] > ko['sf2']['sa'] else ko['sf2']['home']
-            ko['final']['away'] = w2
-            ko['third']['away'] = l2
+    # Yarı Final Bölümü
+    st.subheader("🏅 Yarı Finaller")
+    col_sf1, col_sf2 = st.columns(2)
     
+    with col_sf1:
+        st.markdown(f"**Yarı Final 1:** {ko['sf1']['home']} vs {ko['sf1']['away']}")
+        c1, c2 = st.columns(2)
+        s1_sh = c1.number_input("Skor 1", min_value=0, max_value=25, value=ko['sf1']['sh'], key="sf1_h_input")
+        s1_sa = c2.number_input("Skor 2", min_value=0, max_value=25, value=ko['sf1']['sa'], key="sf1_a_input")
+        if s1_sh != ko['sf1']['sh'] or s1_sa != ko['sf1']['sa']:
+            ko['sf1']['sh'] = s1_sh
+            ko['sf1']['sa'] = s1_sa
+            if s1_sh != s1_sa:
+                ko['sf1']['played'] = True
+                ko['final']['home'] = ko['sf1']['home'] if s1_sh > s1_sa else ko['sf1']['away']
+                ko['third']['home'] = ko['sf1']['away'] if s1_sh > s1_sa else ko['sf1']['home']
+            save_to_disk()
+            st.rerun()
+
+    with col_sf2:
+        st.markdown(f"**Yarı Final 2:** {ko['sf2']['home']} vs {ko['sf2']['away']}")
+        c1, c2 = st.columns(2)
+        s2_sh = c1.number_input("Skor 1", min_value=0, max_value=25, value=ko['sf2']['sh'], key="sf2_h_input")
+        s2_sa = c2.number_input("Skor 2", min_value=0, max_value=25, value=ko['sf2']['sa'], key="sf2_a_input")
+        if s2_sh != ko['sf2']['sh'] or s2_sa != ko['sf2']['sa']:
+            ko['sf2']['sh'] = s2_sh
+            ko['sf2']['sa'] = s2_sa
+            if s2_sh != s2_sa:
+                ko['sf2']['played'] = True
+                ko['final']['away'] = ko['sf2']['home'] if s2_sh > s2_sa else ko['sf2']['away']
+                ko['third']['away'] = ko['sf2']['away'] if s2_sh > s2_sa else ko['sf2']['home']
+            save_to_disk()
+            st.rerun()
+
     st.divider()
 
-    # Final & 3.'lük Maçı
-    st.subheader("👑 Final & 🥉 3.'lük Maçı")
+    # Büyük Final ve 3.lük Maçı
+    st.subheader("👑 Final Karşılaşmaları")
     col_fin, col_thr = st.columns(2)
+    
     with col_fin:
         st.markdown(f"### 🏆 BÜYÜK FİNAL\n**{ko['final']['home']}** vs **{ko['final']['away']}**")
-        c_h, c_a = st.columns(2)
-        ko['final']['sh'] = c_h.number_input("Final Skor 1", min_value=0, max_value=20, value=ko['final']['sh'], key="fin_h")
-        ko['final']['sa'] = c_a.number_input("Final Skor 2", min_value=0, max_value=20, value=ko['final']['sa'], key="fin_a")
-        if ko['final']['sh'] != ko['final']['sa']:
-            champion = ko['final']['home'] if ko['final']['sh'] > ko['final']['sa'] else ko['final']['away']
-            st.success(f"🎉 **ŞAMPİYON: {champion}** 🎉")
+        c1, c2 = st.columns(2)
+        f_sh = c1.number_input("Final Skor 1", min_value=0, max_value=25, value=ko['final']['sh'], key="fin_h_input")
+        f_sa = c2.number_input("Final Skor 2", min_value=0, max_value=25, value=ko['final']['sa'], key="fin_a_input")
+        if f_sh != ko['final']['sh'] or f_sa != ko['final']['sa']:
+            ko['final']['sh'] = f_sh
+            ko['final']['sa'] = f_sa
+            ko['final']['played'] = (f_sh != f_sa)
+            save_to_disk()
+            st.rerun()
+
+        if ko['final'].get('played') and ko['final']['sh'] != ko['final']['sa']:
+            champ = ko['final']['home'] if ko['final']['sh'] > ko['final']['sa'] else ko['final']['away']
+            st.success(f"🎉 **ŞAMPİYON: {champ}** 🎉")
 
     with col_thr:
-        st.markdown(f"### 🥉 3.'lük Karşılaşması\n**{ko['third']['home']}** vs **{ko['third']['away']}**")
-        c_h, c_a = st.columns(2)
-        ko['third']['sh'] = c_h.number_input("3.lük Skor 1", min_value=0, max_value=20, value=ko['third']['sh'], key="thr_h")
-        ko['third']['sa'] = c_a.number_input("3.lük Skor 2", min_value=0, max_value=20, value=ko['third']['sa'], key="thr_a")
-        if ko['third']['sh'] != ko['third']['sa']:
-            third_place = ko['third']['home'] if ko['third']['sh'] > ko['third']['sa'] else ko['third']['away']
-            st.info(f"🥉 **Turnuva 3.'sü: {third_place}**")
+        st.markdown(f"### 🥉 3.'lük Maçı\n**{ko['third']['home']}** vs **{ko['third']['away']}**")
+        c1, c2 = st.columns(2)
+        t_sh = c1.number_input("3.lük Skor 1", min_value=0, max_value=25, value=ko['third']['sh'], key="thr_h_input")
+        t_sa = c2.number_input("3.lük Skor 2", min_value=0, max_value=25, value=ko['third']['sa'], key="thr_a_input")
+        if t_sh != ko['third']['sh'] or t_sa != ko['third']['sa']:
+            ko['third']['sh'] = t_sh
+            ko['third']['sa'] = t_sa
+            ko['third']['played'] = (t_sh != t_sa)
+            save_to_disk()
+            st.rerun()
+
+        if ko['third'].get('played') and ko['third']['sh'] != ko['third']['sa']:
+            runner_up = ko['third']['home'] if ko['third']['sh'] > ko['third']['sa'] else ko['third']['away']
+            st.info(f"🥉 **Turnuva 3.'sü: {runner_up}**")
 
     st.divider()
-    c_b1, c_b2 = st.columns(2)
-    with c_b1:
-        if st.button("⬅️ Gruplara Geri Dön", use_container_width=True):
+    col_nav1, col_nav2 = st.columns([3, 1])
+    with col_nav1:
+        if st.button("⬅️ Grup Karşılaşmalarına Dön", use_container_width=True):
             st.session_state.stage = "groups"
+            save_to_disk()
             st.rerun()
-    with c_b2:
-        if st.button("Turnuvayı Sıfırla 🔄", use_container_width=True):
+    with col_nav2:
+        if st.button("🔄 Yeni Turnuva Başlat", use_container_width=True):
+            if os.path.exists(DATA_FILE):
+                os.remove(DATA_FILE)
             st.session_state.clear()
             st.rerun()
